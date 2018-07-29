@@ -72,6 +72,8 @@ namespace Zhb.Utils
         {
             get
             {
+                if (count < 0 || idx + count > Count)
+                    count = Count - idx;
                 CheckIdx(idx).CheckIdx(idx + count - 1);
                 byte[] res = new byte[count];
                 Array.Copy(buf, sidx + idx, res, 0, count);
@@ -175,7 +177,7 @@ namespace Zhb.Utils
         public byte[] GetCStr(int idx)
         {
             int idx2 = idx;
-            while (buf[idx2] != 0)
+            while (this[idx2] != 0)
                 idx2++;
             return this[idx, idx2 - idx];
         }
@@ -191,7 +193,7 @@ namespace Zhb.Utils
         {
             var res = new List<byte[]>();
             int oldidx = idx;
-            while (buf[idx] != 0)
+            while (this[idx] != 0)
             {
                 byte[] s = GetCStr(idx);
                 res.Add(s);
@@ -318,7 +320,7 @@ namespace Zhb.Utils
     {
         private Stopwatch sw = new Stopwatch();
         private string prefixStr;
-        public Duration(string s = "")
+        public PrintDuration(string s = "")
         {
             this.prefixStr = s;
             this.sw.Start();
@@ -330,7 +332,7 @@ namespace Zhb.Utils
             Console.WriteLine("{0}{1:f3} seconds", this.prefixStr, sec);
         }
     }
-} // end of namespace Zhb.Utils
+} // end of Zhb.Utils
 
 namespace Zhb.ExtensionMethods
 {
@@ -498,7 +500,7 @@ namespace Zhb.ExtensionMethods
             StringBuilder sb = new StringBuilder();
             foreach (byte b in data)
             {
-                if (b > 32 && b < 127)
+                if (b >= 32 && b < 127)
                 {
                     if (b == (byte)'\\')
                         sb.Append(@"\\");
@@ -701,8 +703,10 @@ namespace Zhb.ExtensionMethods
         {
             return Task.Run(async () =>
             {
+                Utils.MyBuffer buf = new Utils.MyBuffer(1024);
                 foreach (byte[] data in datas)
-                    await s.SndAsync(data);
+                    buf.Append(data);
+                await s.SndAsync(buf.ToBytes());
 
             });
         }
@@ -725,7 +729,7 @@ namespace Zhb.ExtensionMethods
             s.Listen(100);
             return s;
         }
-        public static Task<Socket> AcceptAsync(this Socket s)
+        public static Task<Socket> AcptAsync(this Socket s)
         {
             return Task.Run(async () =>
             {
@@ -757,5 +761,108 @@ namespace Zhb.ExtensionMethods
                 return s;
             });
         }
+    } // end of SocketUtil
+} // end of Zhb.ExtensionMethods
+
+namespace Zhb.Utils
+{
+    public interface ISocketable
+    {
+        Socket GetSocket();
     }
-} // end of namespace Zhb.ExtensionMethods
+    public class Socketable : ISocketable, IDisposable
+    {
+        private Socket sock;
+        public Socketable(Socket s) => this.sock = s;
+        public Socket GetSocket() => this.sock;
+        public void Dispose()
+        {
+            this.sock.Shutdown(SocketShutdown.Both);
+            this.sock.Close();
+        }
+
+        public static implicit operator Socketable(Socket s) => new Socketable(s);
+        public static explicit operator Socket(Socketable s) => s.sock;
+    }
+    public class Poller
+    {
+        public const int POLLIN = 0x01;
+        public const int POLLOUT = 0x02;
+        public const int POLLERR = 0x04;
+        public const int POLLINOUT = POLLIN | POLLOUT;
+
+        private Dictionary<IntPtr, (ISocketable, int)> registedObjs = new Dictionary<IntPtr, (ISocketable, int)>(); 
+
+        public void Clear()
+        {
+            registedObjs.Clear();
+        }
+        public Poller Register(ISocketable s, int masks)
+        {
+            registedObjs[s.GetSocket().Handle] = (s, masks);
+            return this;
+        }
+        public Poller Unregister(ISocketable s)
+        {
+            registedObjs.Remove(s.GetSocket().Handle);
+            return this;
+        }
+        public Task<List<(ISocketable, int)>> PollAsync(int milliSecondsTimeout = -1)
+        {
+            if (registedObjs.Count <= 0)
+                return Task.FromResult(new List<(ISocketable, int)>());
+
+            return Task.Run(async () =>
+            {
+                List<Socket> readList = new List<Socket>();
+                List<Socket> writeList = new List<Socket>();
+                List<Socket> errorList = new List<Socket>();
+                MakeCheckList(readList, writeList, errorList);
+                if (milliSecondsTimeout == 0)
+                {
+                    Socket.Select(readList, writeList, errorList, 0);
+                    return MakePollResult(readList, writeList, errorList);
+                }
+
+                int elapsedms = 0, pollms = 1;
+                while (true)
+                {
+                    Socket.Select(readList, writeList, errorList, pollms * 1000);
+                    var res = MakePollResult(readList, writeList, errorList);
+                    if (res.Count > 0)
+                        return res;
+                    elapsedms += pollms;
+                    if (milliSecondsTimeout > 0 && elapsedms >= milliSecondsTimeout)
+                        return res;
+                    await Task.Yield();
+                    MakeCheckList(readList, writeList, errorList);
+                }
+            });
+        }
+        private List<(ISocketable, int)> MakePollResult(List<Socket> readList, List<Socket> writeList, List<Socket> errorList)
+        {
+            List<(ISocketable, int)> res = new List<(ISocketable, int)>();
+            foreach (Socket s in readList)
+                res.Add((registedObjs[s.Handle].Item1, POLLIN));
+            foreach (Socket s in writeList)
+                res.Add((registedObjs[s.Handle].Item1, POLLOUT));
+            foreach (Socket s in errorList)
+                res.Add((registedObjs[s.Handle].Item1, POLLERR));
+            return res;
+        }
+        private void MakeCheckList(List<Socket> readList, List<Socket> writeList, List<Socket> errorList)
+        {
+            foreach (var item in registedObjs)
+            {
+                var (ss, masks) = item.Value;
+                var s = ss.GetSocket();
+                if ((masks & POLLIN) == POLLIN)
+                    readList.Add(s);
+                else if ((masks & POLLOUT) == POLLOUT)
+                    writeList.Add(s);
+                else if ((masks & POLLERR) == POLLERR)
+                    errorList.Add(s);
+            }
+        }
+    }
+} // end of Zhb.Utils

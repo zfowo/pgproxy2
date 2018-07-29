@@ -10,6 +10,7 @@
 // 最好不要用xor，因为两个相同数值的xor结果为0。
 // 
 using System;
+using System.Text;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -173,6 +174,35 @@ namespace PGProtocol3
                 [(byte)BeMsgType.ReadyForQuery] = ReadyForQuery.FromBuffer,
                 [(byte)BeMsgType.RowDescription] = RowDescription.FromBuffer,
             };
+            CheckMsgMap(typeof(FeMsgType), FeMsgMap, true);
+            CheckMsgMap(typeof(BeMsgType), BeMsgMap, false);
+        }
+        private static void CheckMsgMap(Type type, Dictionary<byte, FromBufferFunc> msgMap, bool fe = true)
+        {
+            string mapName = fe ? "FeMsgMap" : "BeMsgMap";
+            Console.WriteLine("ChecMsgMap: {0}", type.Name);
+            string[] msgNames = Enum.GetNames(type);
+            if (msgNames.Length != msgMap.Count)
+                throw new Exception(string.Format("BUG: {0} does not contain all msg FromBuffer", mapName));
+            foreach (string msgName in msgNames)
+            {
+                object msgTypeObj = Enum.Parse(type, msgName);
+                byte msgType = Convert.ToByte(msgTypeObj);
+                if (!msgMap.ContainsKey(msgType))
+                    throw new Exception(string.Format("BUG: {0} does not contain FromBuffer for msg: {1}", mapName, msgType));
+                // 检查msgName和类名是否相同
+                FromBufferFunc func = msgMap[msgType];
+                if (func.Target != null)
+                    throw new Exception(string.Format("BUG: FromBufferFunc for msg {0} is not static method in {1}", msgTypeObj, mapName));
+                Type declareType = func.Method.DeclaringType;
+                Type checkedType = declareType;
+                if (declareType.IsConstructedGenericType)
+                {
+                    checkedType = declareType.GetGenericArguments()[0];
+                }
+                if (checkedType.Name != msgName)
+                    throw new Exception(string.Format("BUG: FromBufferFunc for msg {0} is not from class {1}", msgName, checkedType.Name));
+            }
         }
 
         public const int PG_PROTO_VERSION2_CODE = 131072;
@@ -273,7 +303,9 @@ namespace PGProtocol3
         }
         public override string ToString()
         {
-            return string.Format("<Bind Portal={0} Stmt={1} Fcs={2} ResFcs={3}>", Portal.Bytes(), Stmt.Bytes(), Fcs.ToString2(), ResFcs.ToString2());
+            return string.Format("<Bind Portal={0} Stmt={1} Fcs={2} Params={3} ResFcs={4}>", 
+                                 Portal.Bytes(), Stmt.Bytes(), Fcs.ToString2(), 
+                                 Params.Select(bs => bs?.Bytes()).ToString2() ,ResFcs.ToString2());
         }
     }
     public class Execute : Msg
@@ -392,7 +424,7 @@ namespace PGProtocol3
         public override string ToString()
         {
             return string.Format("<FunctionCall FuncOid={0} Fcs={1}, Args={2}, ResFc={3}", 
-                                 FuncOid, Fcs.ToString2(), Args.Select(bs => bs.Bytes()).ToString2(), ResFc);
+                                 FuncOid, Fcs.ToString2(), Args.Select(bs => bs?.Bytes()).ToString2(), ResFc);
         }
     }
     public class Terminate : EmptyMsg<Terminate>
@@ -607,6 +639,8 @@ namespace PGProtocol3
             buf.Append(MsgType).Append(0).AppendCStr(Tag);
             return FixHeader(buf).ToBytes();
         }
+        // Tag只包含ASCII字符
+        public override string ToString() => string.Format("<CommandComplete Tag={0}>", Tag.Ascii());
     }
     public class CopyData : Msg
     {
@@ -626,6 +660,7 @@ namespace PGProtocol3
             buf.Append(MsgType).Append(0).Append(Data);
             return FixHeader(buf).ToBytes();
         }
+        public override string ToString() => string.Format("<CopyData Data={0}>", Data);
     }
     public class CopyDone : EmptyMsg<CopyDone>
     {
@@ -650,6 +685,10 @@ namespace PGProtocol3
             MyBuffer buf = new MyBuffer();
             buf.Append(MsgType).Append(0).Append(OverallFc).Append(FcCnt).Append(Fcs);
             return FixHeader(buf).ToBytes();
+        }
+        public override string ToString()
+        {
+            return string.Format("<{0} OverallFc={1} Fcs={2}>", typeof(T).Name, OverallFc, Fcs.ToString2());
         }
     }
     public class CopyInResponse : CopyResponse<CopyInResponse>
@@ -680,6 +719,10 @@ namespace PGProtocol3
             MyBuffer buf = new MyBuffer();
             buf.Append(MsgType).Append(0).Append24X(ColValues);
             return FixHeader(buf).ToBytes();
+        }
+        public override string ToString()
+        {
+            return string.Format("<DataRow ColValues={0}>", ColValues.Select(bs => bs?.Bytes()).ToString2());
         }
     }
     public class EmptyQueryResponse : EmptyMsg<EmptyQueryResponse>
@@ -729,6 +772,15 @@ namespace PGProtocol3
             buf.AppendX(Fields.Select(fi => fi.ToBytes()));
             return FixHeader(buf).ToBytes();
         }
+        public override string ToString()
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.AppendFormat("<{0} ", typeof(T).Name);
+            foreach (FieldInfo fi in Fields)
+                sb.AppendFormat("{0}={1} ", fi.FType, fi.FValue.Bytes());
+            sb[sb.Length - 1] = '>';
+            return sb.ToString();
+        }
 
         public static T MakeError(byte[] message, byte[] detail = null, byte[] hint = null)
         {
@@ -736,6 +788,7 @@ namespace PGProtocol3
             byte[] err = "ERROR".Ascii();
             msg.Fields.Add(FieldType.Severity.Make(err));
             msg.Fields.Add(FieldType.Severity2.Make(err));
+            msg.Fields.Add(FieldType.Message.Make(message));
             if (detail != null)
                 msg.Fields.Add(FieldType.Detail.Make(detail));
             if (hint != null)
@@ -768,6 +821,10 @@ namespace PGProtocol3
             buf.Append(MsgType).Append(0).Append4x(ResValue);
             return FixHeader(buf).ToBytes();
         }
+        public override string ToString()
+        {
+            return string.Format("<FunctionCallResponse ResValue={0}>", ResValue == null ? "null" : ResValue.Bytes());
+        }
     }
     public class NoData : EmptyMsg<NoData>
     {
@@ -794,6 +851,10 @@ namespace PGProtocol3
             buf.Append(MsgType).Append(0).Append(Pid).AppendCStr(Channel).AppendCStr(Payload);
             return FixHeader(buf).ToBytes();
         }
+        public override string ToString()
+        {
+            return string.Format("<NotificationResponse Pid={0} Channel={1} Payload={2}>", Pid, Channel.Bytes(), Payload.Bytes());
+        }
     }
     public class ParameterDescription : Msg
     {
@@ -814,6 +875,7 @@ namespace PGProtocol3
             buf.Append(MsgType).Append(0).Append(OidCnt).Append(Oids);
             return FixHeader(buf).ToBytes();
         }
+        public override string ToString() => string.Format("<ParameterDescription Oids={0}>", Oids.ToString2());
     }
     public class ParameterStatus : Msg
     {
@@ -834,6 +896,8 @@ namespace PGProtocol3
             buf.Append(MsgType).Append(0).AppendCStr(Name).AppendCStr(Value);
             return FixHeader(buf).ToBytes();
         }
+        // parameter name只包含ASCII字符
+        public override string ToString() => string.Format("<ParameterStatus Name={0} value={1}>", Name.Bytes(), Value.Bytes());
     }
     public class ParseComplete : EmptyMsg<ParseComplete>
     {
@@ -860,6 +924,7 @@ namespace PGProtocol3
             buf.Append(MsgType).Append(0).Append((byte)TStatus);
             return FixHeader(buf).ToBytes();
         }
+        public override string ToString() => string.Format("<ReadyForQuery TStatus={0}>", TStatus);
 
         public static readonly ReadyForQuery Idle = new ReadyForQuery { TStatus = TransStatus.Idle };
         public static readonly ReadyForQuery InBlock = new ReadyForQuery { TStatus = TransStatus.InBlock };
@@ -875,12 +940,6 @@ namespace PGProtocol3
         public int TypMod = -1;
         public short FmtCode = 0;
 
-        public byte[] ToBytes()
-        {
-            MyBuffer buf = new MyBuffer();
-            buf.AppendCStr(Name).Append(TableOid).Append(AttNum).Append(TypOid).Append(TypLen).Append(TypMod).Append(FmtCode);
-            return buf.ToBytes();
-        }
         public static ColumnInfo FromBuffer(MyBuffer buf, int idx, out int sz)
         {
             int oldidx = idx;
@@ -895,10 +954,24 @@ namespace PGProtocol3
             return new ColumnInfo
             {
                 Name = name,
-                TableOid = tableOid, AttNum = attNum,
-                TypOid = typOid, TypLen = typLen,
-                TypMod = typMod, FmtCode = fmtCode
+                TableOid = tableOid,
+                AttNum = attNum,
+                TypOid = typOid,
+                TypLen = typLen,
+                TypMod = typMod,
+                FmtCode = fmtCode
             };
+        }
+        public byte[] ToBytes()
+        {
+            MyBuffer buf = new MyBuffer();
+            buf.AppendCStr(Name).Append(TableOid).Append(AttNum).Append(TypOid).Append(TypLen).Append(TypMod).Append(FmtCode);
+            return buf.ToBytes();
+        }
+        public override string ToString()
+        {
+            return string.Format("({0},{1},{2},{3},{4},{5},{6})",
+                                 Name.Bytes(), TableOid, AttNum, TypOid, TypLen, TypMod, FmtCode);
         }
     }
     public class RowDescription : Msg
@@ -925,25 +998,44 @@ namespace PGProtocol3
             buf.Append(MsgType).Append(0).Append(ColumnCount);
             foreach (ColumnInfo ci in Columns)
                 buf.Append(ci.ToBytes());
-            return buf.ToBytes();
+            return FixHeader(buf).ToBytes();
         }
+        public override string ToString() => string.Format("<RowDescription Columns={0}>", Columns.ToString2());
     }
-    public static class ColumnRowExtensions
+    public static class RowDescriptionExtensions
     {
-        public static ColumnInfo Column(this byte[] name, short attNum) => new ColumnInfo { Name = name, AttNum = attNum };
-        public static RowDescription RowDesc(this byte[] names, byte delim = 0)
+        public static ColumnInfo Column(this string name, string encoding, short attNum,
+                                        int tableOid = 99999, int typOid = 25, short typLen = -1, int typMod = -1, short fmtCode = 0)
         {
-            if (delim == 0)
-                delim = (byte)' ';
-            byte[][] nmlist = names.Split(delim);
-            RowDescription msg = new RowDescription();
-            for (int i = 0; i < nmlist.Length; ++i)
-            {
-                msg.Columns.Add(nmlist[i].Column((short)(i + 1)));
-            }
-            return msg;
+            return name.GetBytes(encoding).Column(attNum, tableOid, typOid, typLen, typMod, fmtCode);
         }
-        public static RowDescription RowDesc(this IEnumerable<byte[]> names)
+        public static ColumnInfo Column(this byte[] name, short attNum, 
+                                        int tableOid = 99999, int typOid = 25, short typLen = -1, int typMod = -1, short fmtCode = 0)
+        {
+            return new ColumnInfo
+            {
+                Name = name,
+                AttNum = attNum,
+                TableOid = tableOid,
+                TypOid = typOid,
+                TypLen = typLen,
+                TypMod = typMod,
+                FmtCode = fmtCode
+            };
+        }
+        public static RowDescription RowDescription(this string names, char delim = ' ', string encoding = null)
+        {
+            return names.Split(delim).RowDescription(encoding);
+        }
+        public static RowDescription RowDescription(this byte[] names, byte delim = (byte)' ')
+        {
+            return names.Split(delim).RowDescription();
+        }
+        public static RowDescription RowDescription(this IEnumerable<string> names, string encoding = null)
+        {
+            return names.Select(n => n.GetBytes(encoding)).RowDescription();
+        }
+        public static RowDescription RowDescription(this IEnumerable<byte[]> names)
         {
             RowDescription msg = new RowDescription();
             short attNum = 1;
@@ -958,7 +1050,7 @@ namespace PGProtocol3
     // first msg from fe
     public class ParamInfo : IComparable<ParamInfo>, IEquatable<ParamInfo>, IComparable
     {
-        public string Name;
+        public string Name; // 只包含ASCII字符
         public byte[] Value;
 
         public ParamInfo(string name, byte[] value)
@@ -1036,6 +1128,15 @@ namespace PGProtocol3
             buf[0, 4] = buf.Count.GetBytes();
             return buf.ToBytes();
         }
+        public override string ToString()
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append("<StartupMessage ");
+            foreach (var x in Params)
+                sb.AppendFormat("{0}={1} ", x.Name, x.Value.Bytes());
+            sb[sb.Length - 1] = '>';
+            return sb.ToString();
+        }
 
         public override bool Equals(object obj)
         {
@@ -1088,10 +1189,12 @@ namespace PGProtocol3
             buf[0, 4] = buf.Count.GetBytes();
             return buf.ToBytes();
         }
+        public override string ToString() => string.Format("<CancelRequest Pid={0} SecretKey={1}>", Pid, SecretKey);
     }
     public class SSLRequest : Msg
     {
         public int Code => Msg.PG_SSLREQUEST_CODE;
+        public static readonly SSLRequest Default = new SSLRequest();
 
         public static Msg FromBuffer(MyBuffer buf, int idx)
         {
@@ -1105,6 +1208,7 @@ namespace PGProtocol3
             buf.Append(8).Append(Code);
             return buf.ToBytes();
         }
+        public override string ToString() => "<SSLRequest>";
     }
     public static class MsgExtensions
     {
@@ -1254,6 +1358,59 @@ namespace PGProtocol3
 
         public static BackendKeyData BackendKeyData(this int pid, int secretKey) => new BackendKeyData { Pid = pid, SecretKey = secretKey };
 
+        public static CommandComplete CommandComplete(this string tag) => tag.Ascii().CommandComplete();
+        public static CommandComplete CommandComplete(this byte[] tag) => new CommandComplete { Tag = tag };
+
+        public static CopyData CopyData(this string data, string encoding = null) => data.GetBytes(encoding).CopyData();
+        public static CopyData CopyData(this byte[] data) => new CopyData { Data = data };
+
+        public static CopyInResponse CopyInResponse(this int overallFc, params short[] fcs) => new CopyInResponse { OverallFc = (byte)overallFc, Fcs = fcs };
+        public static CopyOutResponse CopyOutResponse(this int overallFc, params short[] fcs) => new CopyOutResponse { OverallFc = (byte)overallFc, Fcs = fcs };
+        public static CopyBothResponse CopyBothResponse(this int overallFc, params short[] fcs) => new CopyBothResponse { OverallFc = (byte)overallFc, Fcs = fcs };
+
+        public static DataRow DataRow(this string ignore, string encoding, params string[] cols)
+        {
+            return new DataRow { ColValues = cols.Select(s => s?.GetBytes(encoding)).ToList() };
+        }
+        public static DataRow DataRow(this string ignore, params byte[][] cols) => new DataRow { ColValues = cols.ToList() };
+
+        public static FunctionCallResponse FunctionCallResponse(this string resValue, string encoding = null)
+        {
+            return new FunctionCallResponse { ResValue = resValue?.GetBytes(encoding) };
+        }
+        public static FunctionCallResponse FunctionCallResponse(this byte[] resValue)
+        {
+            return new FunctionCallResponse { ResValue = resValue };
+        }
+
+        public static NotificationResponse NotificationResponse(this int pid, string channel, string payload, string encoding = null)
+        {
+            return pid.NotificationResponse(channel.GetBytes(encoding), payload.GetBytes(encoding));
+        }
+        public static NotificationResponse NotificationResponse(this int pid, byte[] channel, byte[] payload)
+        {
+            return new NotificationResponse { Pid = pid, Channel = channel, Payload = payload };
+        }
+
+        public static ParameterDescription ParameterDescription(this int ignore, params int[] oids)
+        {
+            return new ParameterDescription { Oids = oids };
+        }
+
+        public static ParameterStatus ParameterStatus(this string name, string value, string encoding = null)
+        {
+            return name.GetBytes(encoding).ParameterStatus(value.GetBytes(encoding));
+        }
+        public static ParameterStatus ParameterStatus(this byte[] name, byte[] value)
+        {
+            return new ParameterStatus { Name = name, Value = value };
+        }
+
+        public static ParamInfo ParamInfo(this string name, string value, string encoding = null)
+        {
+            return name.ParamInfo(value.GetBytes(encoding));
+        }
+        public static ParamInfo ParamInfo(this string name, byte[] value) => new ParamInfo(name, value);
         public static StartupMessage StartupMessag(this string paramStr, char delim1 = ' ', char delim2 = '=', string encoding = null)
         {
             string[] paramArr = paramStr.Split(delim1);
@@ -1261,11 +1418,13 @@ namespace PGProtocol3
             foreach (string p in paramArr)
             {
                 string[] kv = p.Split(delim2, 2);
-                msg.Params.Add(new ParamInfo(kv[0], kv[1].GetBytes(encoding)));
+                msg.Params.Add(kv[0].ParamInfo(kv[1], encoding));
             }
             msg.Params.Sort();
             return msg;
         }
+
+        public static CancelRequest CancelRequest(this int pid, int secretKey) => new CancelRequest { Pid = pid, SecretKey = secretKey };
     }
     public static class MyBufferExtensions
     {
@@ -1280,13 +1439,32 @@ namespace PGProtocol3
             int sz = buf.GetInt(startIdx + 1);
             if (startIdx + sz + 1 > buf.Count)
                 return null;
+            //Console.WriteLine("GetMsg: {0}", buf[startIdx, sz + 1].Bytes());
             byte msgtype = buf[startIdx];
             Msg msg = (fe ? Msg.FeMsgMap : Msg.BeMsgMap)[msgtype](buf, startIdx);
             if (advance)
                 buf.Advance(sz + 1);
             return msg;
         }
-        public static Msg GetStartupMsg(this MyBuffer buf)
+        public static Msg[] GetMsgs(this MyBuffer buf, int max = -1, bool fe = true)
+        {
+            return buf.GetMsgs(0, max, fe);
+        }
+        public static Msg[] GetMsgs(this MyBuffer buf, int startIdx, int max = -1, bool fe = true)
+        {
+            List<Msg> msgs = new List<Msg>();
+            while (true)
+            {
+                if (max > 0 && msgs.Count >= max)
+                    break;
+                Msg m = buf.GetMsg(startIdx, fe);
+                if (m == null)
+                    break;
+                msgs.Add(m);
+            }
+            return msgs.ToArray();
+        }
+        public static Msg GetStartupMsg(this MyBuffer buf, bool advance = true)
         {
             if (buf.Count < 4)
                 return null;
@@ -1303,7 +1481,8 @@ namespace PGProtocol3
                 msg = SSLRequest.FromBuffer(buf, 0);
             else
                 throw new PgProtoException(string.Format("unknown startup msg. code:{0}", code));
-            buf.Advance(sz);
+            if (advance)
+                buf.Advance(sz);
             return msg;
         }
     }

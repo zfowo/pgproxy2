@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.27703.2026
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "pgproxy", "pgproxy.csproj", "{D1523A54-FDEC-4E52-8965-C9AEAF2573BE}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D1523A54-FDEC-4E52-8965-C9AEAF2573BE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D1523A54-FDEC-4E52-8965-C9AEAF2573BE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D1523A54-FDEC-4E52-8965-C9AEAF2573BE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D1523A54-FDEC-4E52-8965-C9AEAF2573BE}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {B3612A5A-376D-4584-8983-302CC83744FF}
+	EndGlobalSection
+EndGlobal
