@@ -189,11 +189,11 @@ namespace PGProtocol3
                 object msgTypeObj = Enum.Parse(type, msgName);
                 byte msgType = Convert.ToByte(msgTypeObj);
                 if (!msgMap.ContainsKey(msgType))
-                    throw new Exception(string.Format("BUG: {0} does not contain FromBuffer for msg: {1}", mapName, msgType));
+                    throw new Exception(string.Format("BUG: {0} does not contain FromBuffer for msg: {1}", mapName, msgName));
                 // 检查msgName和类名是否相同
                 FromBufferFunc func = msgMap[msgType];
                 if (func.Target != null)
-                    throw new Exception(string.Format("BUG: FromBufferFunc for msg {0} is not static method in {1}", msgTypeObj, mapName));
+                    throw new Exception(string.Format("BUG: FromBufferFunc for msg {0} is not static method in {1}", msgName, mapName));
                 Type declareType = func.Method.DeclaringType;
                 Type checkedType = declareType;
                 if (declareType.IsConstructedGenericType)
@@ -201,7 +201,7 @@ namespace PGProtocol3
                     checkedType = declareType.GetGenericArguments()[0];
                 }
                 if (checkedType.Name != msgName)
-                    throw new Exception(string.Format("BUG: FromBufferFunc for msg {0} is not from class {1}", msgName, checkedType.Name));
+                    throw new Exception(string.Format("BUG: FromBufferFunc for msg {0} is from class {1}", msgName, checkedType.Name));
             }
         }
 
@@ -660,7 +660,7 @@ namespace PGProtocol3
             buf.Append(MsgType).Append(0).Append(Data);
             return FixHeader(buf).ToBytes();
         }
-        public override string ToString() => string.Format("<CopyData Data={0}>", Data);
+        public override string ToString() => string.Format("<CopyData Data={0}>", Data.Bytes());
     }
     public class CopyDone : EmptyMsg<CopyDone>
     {
@@ -669,7 +669,7 @@ namespace PGProtocol3
     public abstract class CopyResponse<T> : Msg where T : CopyResponse<T>, new()
     {
         public byte OverallFc;
-        public short FcCnt => (short)Fcs.Length;
+        public short ColCnt => (short)Fcs.Length;
         public short[] Fcs = MiscUtil.EmptyShorts;
 
         public static Msg FromBuffer(MyBuffer buf, int idx)
@@ -683,7 +683,7 @@ namespace PGProtocol3
         public override byte[] ToBytes()
         {
             MyBuffer buf = new MyBuffer();
-            buf.Append(MsgType).Append(0).Append(OverallFc).Append(FcCnt).Append(Fcs);
+            buf.Append(MsgType).Append(0).Append(OverallFc).Append(ColCnt).Append(Fcs);
             return FixHeader(buf).ToBytes();
         }
         public override string ToString()
@@ -795,6 +795,17 @@ namespace PGProtocol3
                 msg.Fields.Add(FieldType.Hint.Make(hint));
             return msg;
         }
+
+        public byte[] this[FieldType ft]
+        {
+            get
+            {
+                int idx = Fields.FindIndex(fi => fi.FType == ft);
+                if (idx < 0)
+                    throw new ArgumentOutOfRangeException($"Fields do not contain info for field {ft}");
+                return Fields[idx].FValue;
+            }
+        }
     }
     public class ErrorResponse : ErrorNoticeResponse<ErrorResponse>
     {
@@ -897,7 +908,7 @@ namespace PGProtocol3
             return FixHeader(buf).ToBytes();
         }
         // parameter name只包含ASCII字符
-        public override string ToString() => string.Format("<ParameterStatus Name={0} value={1}>", Name.Bytes(), Value.Bytes());
+        public override string ToString() => string.Format("<ParameterStatus Name={0} value={1}>", Name.Ascii(), Value.Bytes());
     }
     public class ParseComplete : EmptyMsg<ParseComplete>
     {
@@ -930,11 +941,12 @@ namespace PGProtocol3
         public static readonly ReadyForQuery InBlock = new ReadyForQuery { TStatus = TransStatus.InBlock };
         public static readonly ReadyForQuery Fail = new ReadyForQuery { TStatus = TransStatus.Fail };
     }
+    // 数据如果不来自真实的表，那么TableOid和AttNum一般要设为0。
     public class ColumnInfo
     {
         public byte[] Name;
-        public int TableOid = 99999;
-        public short AttNum;
+        public int TableOid = 0;
+        public short AttNum = 0;
         public int TypOid = 25;
         public short TypLen = -1;
         public int TypMod = -1;
@@ -1004,13 +1016,13 @@ namespace PGProtocol3
     }
     public static class RowDescriptionExtensions
     {
-        public static ColumnInfo Column(this string name, string encoding, short attNum,
-                                        int tableOid = 99999, int typOid = 25, short typLen = -1, int typMod = -1, short fmtCode = 0)
+        public static ColumnInfo Column(this string name, string encoding, short attNum = 0,
+                                        int tableOid = 0, int typOid = 25, short typLen = -1, int typMod = -1, short fmtCode = 0)
         {
             return name.GetBytes(encoding).Column(attNum, tableOid, typOid, typLen, typMod, fmtCode);
         }
-        public static ColumnInfo Column(this byte[] name, short attNum, 
-                                        int tableOid = 99999, int typOid = 25, short typLen = -1, int typMod = -1, short fmtCode = 0)
+        public static ColumnInfo Column(this byte[] name, short attNum = 0, 
+                                        int tableOid = 0, int typOid = 25, short typLen = -1, int typMod = -1, short fmtCode = 0)
         {
             return new ColumnInfo
             {
@@ -1038,12 +1050,8 @@ namespace PGProtocol3
         public static RowDescription RowDescription(this IEnumerable<byte[]> names)
         {
             RowDescription msg = new RowDescription();
-            short attNum = 1;
             foreach (byte[] nm in names)
-            {
-                msg.Columns.Add(nm.Column(attNum));
-                ++attNum;
-            }
+                msg.Columns.Add(nm.Column());
             return msg;
         }
     }
@@ -1094,6 +1102,7 @@ namespace PGProtocol3
         }
     }
     // 手动创建StartupMesage后，需要调用Params.Sort()。
+    // 基本上Params包含的参数个数不多，所以无需用Dictionay来保存。
     public class StartupMessage : Msg, IEquatable<StartupMessage>
     {
         public int Code => Msg.PG_PROTO_VERSION3_CODE;
@@ -1136,6 +1145,43 @@ namespace PGProtocol3
                 sb.AppendFormat("{0}={1} ", x.Name, x.Value.Bytes());
             sb[sb.Length - 1] = '>';
             return sb.ToString();
+        }
+
+        // 返回null表示指定的参数不存在
+        public byte[] this[string name]
+        {
+            get
+            {
+                // 有必要用BinarySearch？
+                int idx = Params.FindIndex(pi => pi.Name == name);
+                if (idx < 0)
+                    return null;
+                return Params[idx].Value;
+            }
+        }
+        public bool IsReplication
+        {
+            get
+            {
+                string value = this["replication"]?.Ascii();
+                return value != null && (value == "database" || value == "true" || value == "1");
+            }
+        }
+            
+        public bool IsLogicalReplication
+        {
+            get
+            {
+                return this["replication"]?.Ascii() == "database";
+            }
+        }
+        public bool IsPhysicalLogical
+        {
+            get
+            {
+                string value = this["replication"]?.Ascii();
+                return value != null && (value == "true" || value == "1");
+            }
         }
 
         public override bool Equals(object obj)
@@ -1212,6 +1258,12 @@ namespace PGProtocol3
     }
     public static class MsgExtensions
     {
+        public static bool IsAsyncMsg(this Msg msg)
+        {
+            BeMsgType mt = (BeMsgType)msg.MsgType;
+            return mt == BeMsgType.NoticeResponse || mt == BeMsgType.NotificationResponse || mt == BeMsgType.ParameterStatus;
+        }
+
         public static Query Query(this string sql, string encoding = null) => new Query { Sql = sql.GetBytes(encoding) };
         public static Query Query(this byte[] sql) => new Query { Sql = sql };
 
@@ -1417,6 +1469,8 @@ namespace PGProtocol3
             StartupMessage msg = new StartupMessage();
             foreach (string p in paramArr)
             {
+                if (p.Trim() == "")
+                    continue;
                 string[] kv = p.Split(delim2, 2);
                 msg.Params.Add(kv[0].ParamInfo(kv[1], encoding));
             }

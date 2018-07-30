@@ -13,6 +13,7 @@ using System.Security.Cryptography;
 using System.Net;
 using System.Net.Sockets;
 using System.Globalization;
+using System.Linq;
 
 using Zhb.ExtensionMethods;
 namespace Zhb.Utils
@@ -466,20 +467,20 @@ namespace Zhb.ExtensionMethods
             return res.ToArray();
         }
 
-        public static string ToString2<T>(this IEnumerable<T> arr)
+        public static string ToString2<T>(this IEnumerable<T> arr, string bracket = "[]", string nullStr = "<null>")
         {
             StringBuilder sb = new StringBuilder();
-            sb.Append("[");
+            sb.Append(bracket[0]);
             foreach (T t in arr)
             {
                 if (t == null)
-                    sb.Append("<null>, ");
+                    sb.AppendFormat("{0}, ", nullStr);
                 else
                     sb.AppendFormat("{0}, ", t);
             }
             if (sb.Length > 1)
                 sb.Length -= 2;
-            sb.Append("]");
+            sb.Append(bracket[1]);
             return sb.ToString();
         }
     }
@@ -547,6 +548,12 @@ namespace Zhb.ExtensionMethods
     }
     public static class BitConvertUtil
     {
+        static BitConvertUtil()
+        {
+            string[] encNames = EncMap.Keys.ToArray();
+            foreach (string nm in encNames)
+                EncMap[nm.ToUpper()] = EncMap[nm];
+        }
         public static Dictionary<string, MyEncodingInfo> EncMap = new Dictionary<string, MyEncodingInfo>()
         {
             ["ascii"] = new MyEncodingInfo(Encoding.ASCII.GetString, Encoding.ASCII.GetBytes), 
